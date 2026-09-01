@@ -8,18 +8,14 @@ global:
   environment: uat
   namespace: ns-cockpit-agent
   imageRegistry: 009160046075.dkr.ecr.eu-central-1.amazonaws.com
-
 replicas: 1
-
 serviceAccount:
   # Name must match the sub the role's trust policy allows, or STS refuses the assume.
   name: cockpit-voice-uat
   roleArn: arn:aws:iam::009160046075:role/cockpit-voice-uat
-
 image:
   repository: kai-voice-agent-uat
-  tag: "stg"
-
+  tag: "86fd982"
 config:
   AWS_REGION: eu-central-1
   AWS_DEFAULT_REGION: eu-central-1
