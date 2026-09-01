@@ -1,0 +1,122 @@
+# Base configuration - DO NOT MODIFY
+# Use app-config/{env}/{region}/values.yaml for environment-specific overrides
+
+global:
+  configMapSuffix: false
+
+  initContainers:
+    enabled: false
+
+  csiVolumes:
+    enabled: true
+
+  nodeSelector:
+    intent: apps
+
+  istio:
+    enabled: false
+    labels: {}
+    annotations: {}
+
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+
+  labels:
+    app.kubernetes.io/managed-by: Helm
+    app.kubernetes.io/name: kai-voice-agent
+    app.kubernetes.io/instance: observability
+
+  annotations:
+    meta.helm.sh/release-name: "{{ .Release.Name }}"
+    meta.helm.sh/release-namespace: "{{ .Release.Namespace }}"
+
+  tolerations:
+    enabled: true
+
+# Service-specific defaults (overridden by app-config)
+name: kai-voice-agent
+enabled: true
+replicas: 1
+terminationGracePeriodSeconds: 60
+envJsonMount:
+  enabled: false
+
+image:
+  repository: kai-voice-agent
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8081
+  targetPort: 8081
+  name: kai-voice-agent-service
+
+configMapName: "notification-app-config"
+
+config: {}
+
+tolerations:
+  - key: "resimspot"
+    operator: "Exists"
+    effect: "NoSchedule"
+  - key: "karpenter.sh/unschedulable"
+    operator: "Exists"
+    effect: "NoSchedule"
+
+probes:
+  enabled: true
+  startup:
+    httpGet:
+      path: /actuator/health/liveness
+      port: 8081
+      scheme: HTTP
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 12    # 2 minute startup grace period (12 * 10s)
+    successThreshold: 1
+
+  readiness:
+    httpGet:
+      path: /actuator/health/readiness
+      port: 8081
+      scheme: HTTP
+    initialDelaySeconds: 5
+    periodSeconds: 20
+    timeoutSeconds: 3
+    failureThreshold: 3
+    successThreshold: 1
+
+  liveness:
+    httpGet:
+      path: /actuator/health/liveness
+      port: 8081
+      scheme: HTTP
+    initialDelaySeconds: 15
+    periodSeconds: 30
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "500m"
+
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+pdb:
+  enabled: false
+  minAvailable: 1

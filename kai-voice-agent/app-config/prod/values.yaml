@@ -1,0 +1,49 @@
+global:
+  environment: prod
+  namespace: ns-resim-prod
+  imageRegistry: 699453145100.dkr.ecr.eu-central-1.amazonaws.com
+  serviceAccountName: resim-irsa-service-account
+  secretProviderClass: aws-secrets-prod
+  secretName: resim-env-variables-secret
+  kmsKeyArn: "arn:aws:kms:ap-northeast-1:699453145100:key/4b8c545a-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+  awsRegion: eu-central-1
+  initContainers:
+    enabled: true
+  tolerations:
+    enabled: true
+
+replicas: 2
+hpa:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+pdb:
+  enabled: true
+  minAvailable: 1
+
+image:
+  repository: kai-voice-agent
+  tag: v1.0.0
+
+name: kai-voice-agent
+configMapName: kai-voice-agent-config
+
+config: {}
+
+service:
+  name: kai-voice-agent-service
+  port: 8081
+  targetPort: 8081
+
+metricsPort: 9090
+
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "500m"
+
+probes:
+  enabled: true

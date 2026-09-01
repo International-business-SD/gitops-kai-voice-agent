@@ -1,0 +1,6 @@
+dependencies:
+- name: esim-common
+  repository: file://../common
+  version: 1.0.0
+digest: sha256:80563264a0fe09d1f184e5868f8e2a990b839f4f52b1bf4343701689bac7cb65
+generated: "2026-03-18T12:01:32.52324537+08:00"

@@ -1,0 +1,24 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Values.configMapName }}{{- if and .Values.global.configMapSuffix .Values.global.environment }}-{{ .Values.global.environment }}{{- end }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: {{ .Values.name }}
+    {{- with .Values.global.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+  annotations:
+    {{- if .Values.global.annotations }}
+    {{- range $key, $value := .Values.global.annotations }}
+    {{ $key }}: {{ tpl $value $ | quote }}
+    {{- end }}
+    {{- end }}
+data:
+  {{- $cfg := .Values.config | default dict }}
+  {{- if not (kindIs "map" $cfg) }}
+  {{- fail "values.config must be a map of key/value pairs" }}
+  {{- end }}
+  {{- range $key := keys $cfg | sortAlpha }}
+  {{ $key }}: {{ tpl (toString (index $cfg $key)) $ | quote }}
+  {{- end }}
