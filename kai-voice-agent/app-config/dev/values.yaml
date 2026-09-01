@@ -17,8 +17,8 @@ serviceAccount:
   roleArn: arn:aws:iam::009160046075:role/cockpit-voice-dev
 
 image:
-  repository: cockpit/kai-voice
-  tag: ""
+  repository: kai-voice-agent-dev
+  tag: "stg"
 
 config:
   AWS_REGION: eu-central-1

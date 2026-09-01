@@ -1,0 +1,371 @@
+---
+# Source: kai-voice/templates/serviceaccount.yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: cockpit-voice-dev
+  namespace: default
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::009160046075:role/cockpit-voice-dev
+  labels:
+    app: kai-voice
+    environment: dev
+    managed-by: helm
+---
+# Source: kai-voice/templates/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kai-voice-config
+  namespace: default
+  labels:
+    app: kai-voice
+data:
+  AWS_DEFAULT_REGION: "eu-central-1"
+  AWS_REGION: "eu-central-1"
+  DOMO_INSTANCE: "rakuten-denwa.domo.com"
+  DOMO_SCOPE: "data dashboard"
+  HERMES_LANGFUSE_BASE_URL: "https://cloud.langfuse.com"
+  HERMES_LANGFUSE_ENV: "production"
+  HERMES_LANGFUSE_SAMPLE_RATE: "1.0"
+  LIVEKIT_AGENT_NAME: "kai-domo"
+  LIVEKIT_URL: "wss://domo-ksvmh17v.livekit.cloud"
+  PGSQL_DB: "domo_datasets"
+  PGSQL_SCHEMA: "domo_mirror"
+  PGSQL_SSLMODE: "require"
+  PGSQL_USER: "useradmin"
+  VOICE_BEDROCK_MAX_TOKENS: "400"
+  VOICE_BEDROCK_MODEL: "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+  VOICE_COOKIE_SECURE: "1"
+  VOICE_DOMO_TIMEOUT_S: "25"
+  VOICE_JOIN_TTL_S: "300"
+  VOICE_LANGFUSE_CAPTURE: "sanitized"
+  VOICE_MAX_TOOL_STEPS: "12"
+  VOICE_PUBLIC_BASE_URL: "https://kai-voice.myesimprofile.com"
+  VOICE_SESSION_TTL_S: "28800"
+  VOICE_SONIC_REGION: "us-east-1"
+  VOICE_SONIC_SQL_HELPER: "1"
+  VOICE_SONIC_TURN: "MEDIUM"
+  VOICE_SONIC_VOICE: "tiffany"
+  # Derived, so renaming the Service cannot leave PGSQL_HOST pointing at the old name.
+  PGSQL_HOST: "kai-mirror-postgres.default.svc.cluster.local"
+  PGSQL_PORT: "5432"
+---
+# Source: kai-voice/templates/service-mirror.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kai-mirror-postgres
+  namespace: default
+  labels:
+    app: kai-voice
+spec:
+  type: ExternalName
+  externalName: "domo-datasets-db.crius6cgw774.eu-central-1.rds.amazonaws.com"
+---
+# Source: kai-voice/templates/service.yaml
+apiVersion: v1
+kind: Service
+metadata:
+  name: kai-voice
+  namespace: default
+  labels:
+    app: kai-voice
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8787
+      protocol: TCP
+  selector:
+    app: kai-voice
+---
+# Source: kai-voice/templates/deployment-worker.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kai-voice-worker
+  namespace: default
+  labels:
+    app: kai-voice-worker
+    environment: dev
+    team: ibd-cockpit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kai-voice-worker
+  # A new worker answers :8081 with 200 within ~4s, while it is still retrying
+  # its LiveKit registration — verified against an unreachable URL. So Ready does
+  # not mean dispatchable, and a readiness probe cannot close the gap. Holding the
+  # new pod Ready for 20s before the old one drains does.
+  minReadySeconds: 20
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: kai-voice-worker
+        environment: dev
+      annotations:
+        checksum/config: 28de42e45f3d0473d63f1844464db2c7d487cffb425728998db1720fc9a7603d
+        gitops.cockpit/managed-by: argocd
+        gitops.cockpit/repo: gitops-cockpit-agent
+        gitops.cockpit/workload: kai-voice
+    spec:
+      serviceAccountName: cockpit-voice-dev
+      securityContext:
+        runAsGroup: 10001
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kai-voice-worker
+          image: "009160046075.dkr.ecr.eu-central-1.amazonaws.com/kai-voice-agent-dev:stg"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+          # Same image as the token server; only the command differs.
+          command: ["python", "-m", "voice.livekit_agent", "start"]
+          ports:
+            - name: agent-health
+              containerPort: 8081
+              protocol: TCP
+          # Secret first, ConfigMap second — see deployment.yaml for why.
+          envFrom:
+            - secretRef:
+                name: cockpit-agent-env
+            - configMapRef:
+                name: kai-voice-config
+          resources:
+            limits:
+              memory: 2Gi
+            requests:
+              cpu: 500m
+              memory: 1Gi
+          # The LiveKit framework serves this and returns 503 once the inference
+          # subprocess dies or the connection is given up. Without it a wedged
+          # worker stays Running forever and callers hear silence: there is no
+          # Service, so nothing else would ever notice.
+          livenessProbe:
+            httpGet:
+              path: /
+              port: agent-health
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+      # No Service: the worker dials out to LiveKit Cloud and nothing in the
+      # cluster connects to it. The port above exists only for the kubelet probe.
+      #
+      # Long grace period so a rolling update lets a call finish instead of
+      # cutting the caller off mid-sentence.
+      terminationGracePeriodSeconds: 300
+---
+# Source: kai-voice/templates/deployment.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: kai-voice
+  namespace: default
+  labels:
+    app: kai-voice
+    environment: dev
+    team: ibd-cockpit
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: kai-voice
+  strategy:
+    # Recreate, not RollingUpdate: maxSurge would start a second pod before the
+    # old one exits, and join grants live in that pod's memory. Two live pods
+    # means a one-time WhatsApp link can be redeemed on each. Costs a short 503
+    # at the ALB per deploy, which is the right trade for non-replicable auth state.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app: kai-voice
+        environment: dev
+      annotations:
+        checksum/config: 28de42e45f3d0473d63f1844464db2c7d487cffb425728998db1720fc9a7603d
+        gitops.cockpit/managed-by: argocd
+        gitops.cockpit/repo: gitops-cockpit-agent
+        gitops.cockpit/workload: kai-voice
+    spec:
+      serviceAccountName: cockpit-voice-dev
+      securityContext:
+        runAsGroup: 10001
+        runAsNonRoot: true
+        runAsUser: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: kai-voice
+          image: "009160046075.dkr.ecr.eu-central-1.amazonaws.com/kai-voice-agent-dev:stg"
+          imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+              - ALL
+          command: ["uvicorn", "voice.app:app", "--host", "0.0.0.0", "--port", "8787"]
+          ports:
+            - name: http
+              containerPort: 8787
+              protocol: TCP
+          # Secret first, ConfigMap second: on a duplicate key the LAST source
+          # wins, and operational config must beat a stale developer value that
+          # rode into the shared secret from a laptop .env.
+          envFrom:
+            - secretRef:
+                name: cockpit-agent-env
+            - configMapRef:
+                name: kai-voice-config
+          resources:
+            limits:
+              cpu: "2"
+              memory: 2Gi
+            requests:
+              cpu: 250m
+              memory: 512Mi
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            failureThreshold: 24
+      terminationGracePeriodSeconds: 45
+---
+# Source: kai-voice/templates/cronjob-mirror-sync.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: kai-mirror-sync
+  namespace: default
+  labels:
+    app: kai-mirror-sync
+    team: ibd-cockpit
+spec:
+  schedule: "0 21 * * *"
+  timeZone: "Etc/UTC"
+  # The load swaps tables in place; a second concurrent run would fight the swap.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 3600
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 1
+      activeDeadlineSeconds: 10800
+      template:
+        metadata:
+          labels:
+            app: kai-mirror-sync
+        spec:
+          restartPolicy: Never
+          # Pulls Domo over HTTPS and writes Postgres; needs neither AWS nor the K8s API.
+          automountServiceAccountToken: false
+          securityContext:
+            runAsGroup: 10001
+            runAsNonRoot: true
+            runAsUser: 10001
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: mirror-sync
+              image: "009160046075.dkr.ecr.eu-central-1.amazonaws.com/kai-voice-agent-dev:stg"
+              imagePullPolicy: IfNotPresent
+              # --force because the CronJob schedule is the only schedule. Without it
+              # the app also applies metrics/mirror.json's daily window, and synced_at
+              # is written after the load finishes — always inside the window at the
+              # next fire, so every second night would skip every dataset and exit 0.
+              command: ["python", "-m", "domo_mirror", "sync", "--force"]
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                  - ALL
+              envFrom:
+                - secretRef:
+                    name: cockpit-agent-env
+                # Write credentials live here alone, so the agent pods never hold them.
+                # Ahead of the ConfigMap: the last source wins, and a hand-made
+                # Secret must not be able to override PGSQL_HOST or PGSQL_SCHEMA.
+                - secretRef:
+                    name: kai-mirror-sync-env
+                - configMapRef:
+                    name: kai-voice-config
+              resources:
+                limits:
+                  memory: 4Gi
+                requests:
+                  cpu: 500m
+                  memory: 1Gi
+---
+# Source: kai-voice/templates/ingress.yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: kai-voice
+  namespace: default
+  labels:
+    app: kai-voice
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/group.name: rakuten-esim
+    alb.ingress.kubernetes.io/healthcheck-protocol: HTTP
+    alb.ingress.kubernetes.io/healthcheck-port: traffic-port
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/healthcheck-interval-seconds: "30"
+    alb.ingress.kubernetes.io/healthcheck-timeout-seconds: "5"
+    alb.ingress.kubernetes.io/success-codes: "200"
+    alb.ingress.kubernetes.io/healthy-threshold-count: "3"
+    alb.ingress.kubernetes.io/unhealthy-threshold-count: "3"
+    alb.ingress.kubernetes.io/certificate-arn: arn:aws:acm:eu-central-1:009160046075:certificate/ed98d224-e97b-439d-a210-08d4ba4722ca
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTP":80},{"HTTPS":443}]'
+    alb.ingress.kubernetes.io/ssl-redirect: "443"
+    alb.ingress.kubernetes.io/security-groups: "sg-0a72ddda13c9dfb49,sg-0610ceb8d23a42d98"
+    alb.ingress.kubernetes.io/manage-backend-security-group-rules: "true"
+    alb.ingress.kubernetes.io/wafv2-acl-arn: arn:aws:wafv2:eu-central-1:009160046075:regional/webacl/Web-WAF-EU-Security-Fixed/3b14fb47-9628-44cb-b16c-6ae1fb06c512
+    external-dns.alpha.kubernetes.io/hostname: kai-voice.myesimprofile.com
+spec:
+  ingressClassName: alb
+  rules:
+    - host: "kai-voice.myesimprofile.com"
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: kai-voice
+                port:
+                  number: 80
