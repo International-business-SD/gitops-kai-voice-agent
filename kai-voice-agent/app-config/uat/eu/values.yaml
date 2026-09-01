@@ -1,0 +1,28 @@
+# EU (eu-central-1) region overlay for kai-voice on eks-resim-eu-uat-001.
+# Ingress pattern matches gitops-aire (same ALB group, cert, WAF, office SGs).
+
+global:
+  awsRegion: eu-central-1
+
+# The RDS instance is region-scoped, like certificateArn above.
+mirror:
+  rdsEndpoint: domo-datasets-db.crius6cgw774.eu-central-1.rds.amazonaws.com
+
+ingress:
+  enabled: true
+  host: kai-voice.myesimprofile.com
+  externalDnsHostname: kai-voice.myesimprofile.com
+  group: rakuten-esim
+  securityGroups:
+    - sg-0a72ddda13c9dfb49 # ibsd-office-whitelist-http-sg-dev
+    - sg-0610ceb8d23a42d98 # ibsd-office-whitelist-https-sg-dev
+  certificateArn: arn:aws:acm:eu-central-1:009160046075:certificate/ed98d224-e97b-439d-a210-08d4ba4722ca
+  wafAclArn: arn:aws:wafv2:eu-central-1:009160046075:regional/webacl/Web-WAF-EU-Security-Fixed/3b14fb47-9628-44cb-b16c-6ae1fb06c512
+
+config:
+  # Hermes CTA must use this origin (D2: VOICE_PUBLIC_BASE_URL on hermes + voice).
+  VOICE_PUBLIC_BASE_URL: "https://kai-voice.myesimprofile.com"
+  VOICE_COOKIE_SECURE: "1"
+  # Where the worker registers. LiveKit Cloud terminates the WebRTC media, so no
+  # media port is exposed here; the worker only needs outbound 443.
+  LIVEKIT_URL: "wss://domo-ksvmh17v.livekit.cloud"
