@@ -1,11 +1,6 @@
 apiVersion: v2
-name: kai-voice-agent
-description: esim-notification-service Microservice Helm Chart
+name: kai-voice
+description: Kai web voice (LiveKit Cloud + Nova Sonic + Domo) — separate from hermes-agent
 type: application
-version: 1.0.0
-appVersion: "1.0"
-
-dependencies:
-  - name: esim-common
-    version: "1.0.0"
-    repository: "file://../common"
+version: 0.1.0
+appVersion: "0.1.0"

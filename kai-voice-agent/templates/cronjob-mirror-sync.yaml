@@ -1,0 +1,58 @@
+{{- if .Values.mirrorSync.enabled }}
+{{- if not .Values.image.tag }}
+{{- fail "image.tag must be set in app-config/<env>/values.yaml (no floating tag)" }}
+{{- end }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ .Values.mirrorSync.name }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: {{ .Values.mirrorSync.name }}
+    team: {{ .Values.team }}
+spec:
+  schedule: {{ .Values.mirrorSync.schedule | quote }}
+  timeZone: {{ .Values.mirrorSync.timeZone | quote }}
+  # The load swaps tables in place; a second concurrent run would fight the swap.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: {{ .Values.mirrorSync.startingDeadlineSeconds }}
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.mirrorSync.backoffLimit }}
+      activeDeadlineSeconds: {{ .Values.mirrorSync.activeDeadlineSeconds }}
+      template:
+        metadata:
+          labels:
+            app: {{ .Values.mirrorSync.name }}
+        spec:
+          restartPolicy: Never
+          # Pulls Domo over HTTPS and writes Postgres; needs neither AWS nor the K8s API.
+          automountServiceAccountToken: false
+          securityContext:
+{{ toYaml .Values.podSecurityContext | indent 12 }}
+          containers:
+            - name: mirror-sync
+              image: "{{ .Values.global.imageRegistry }}/{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              # --force because the CronJob schedule is the only schedule. Without it
+              # the app also applies metrics/mirror.json's daily window, and synced_at
+              # is written after the load finishes — always inside the window at the
+              # next fire, so every second night would skip every dataset and exit 0.
+              command: ["python", "-m", "domo_mirror", "sync", "--force"]
+              securityContext:
+{{ toYaml .Values.containerSecurityContext | indent 16 }}
+              envFrom:
+                - secretRef:
+                    name: {{ .Values.envFromSecret }}
+                # Write credentials live here alone, so the agent pods never hold them.
+                # Ahead of the ConfigMap: the last source wins, and a hand-made
+                # Secret must not be able to override PGSQL_HOST or PGSQL_SCHEMA.
+                - secretRef:
+                    name: {{ .Values.mirrorSync.secretName }}
+                - configMapRef:
+                    name: {{ .Values.name }}-config
+              resources:
+{{ toYaml .Values.mirrorSync.resources | indent 16 }}
+{{- end }}

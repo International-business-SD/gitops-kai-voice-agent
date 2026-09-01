@@ -1,0 +1,81 @@
+{{- if not .Values.image.tag }}
+{{- fail "image.tag is empty — set it in kai-voice/app-config/<env>/values.yaml after pushing to ECR" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.worker.name }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: {{ .Values.worker.name }}
+    environment: {{ .Values.global.environment }}
+    team: {{ .Values.team }}
+spec:
+  replicas: {{ .Values.worker.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Values.worker.name }}
+  # A new worker answers :8081 with 200 within ~4s, while it is still retrying
+  # its LiveKit registration — verified against an unreachable URL. So Ready does
+  # not mean dispatchable, and a readiness probe cannot close the gap. Holding the
+  # new pod Ready for 20s before the old one drains does.
+  minReadySeconds: {{ .Values.worker.minReadySeconds }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: {{ .Values.worker.name }}
+        environment: {{ .Values.global.environment }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: {{ .Values.worker.name }}
+          image: "{{ .Values.global.imageRegistry }}/{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.containerSecurityContext | nindent 12 }}
+          # Same image as the token server; only the command differs.
+          command: ["python", "-m", "voice.livekit_agent", "start"]
+          ports:
+            - name: agent-health
+              containerPort: 8081
+              protocol: TCP
+          # Secret first, ConfigMap second — see deployment.yaml for why.
+          envFrom:
+            {{- if .Values.envFromSecret }}
+            - secretRef:
+                name: {{ .Values.envFromSecret }}
+            {{- end }}
+            - configMapRef:
+                name: {{ .Values.name }}-config
+          resources:
+            {{- toYaml .Values.worker.resources | nindent 12 }}
+          # The LiveKit framework serves this and returns 503 once the inference
+          # subprocess dies or the connection is given up. Without it a wedged
+          # worker stays Running forever and callers hear silence: there is no
+          # Service, so nothing else would ever notice.
+          livenessProbe:
+            httpGet:
+              path: /
+              port: agent-health
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
+      # No Service: the worker dials out to LiveKit Cloud and nothing in the
+      # cluster connects to it. The port above exists only for the kubelet probe.
+      #
+      # Long grace period so a rolling update lets a call finish instead of
+      # cutting the caller off mid-sentence.
+      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}

@@ -1,122 +1,201 @@
-# Base configuration - DO NOT MODIFY
-# Use app-config/{env}/{region}/values.yaml for environment-specific overrides
+# Chart defaults for kai-voice (LiveKit Cloud + Nova Sonic).
+#
+# Layered by ArgoCD:
+#   values.yaml -> app-config/<env>/values.yaml -> app-config/<env>/<region>/values.yaml
+#
+# Two workloads from ONE image, differing only in command:
+#   token  — uvicorn voice.app:app on 8787, behind the ALB (/join, /demo, /token)
+#   worker — python -m voice.livekit_agent start, no Service, outbound WSS only
+# Media never reaches the cluster: the browser talks to LiveKit Cloud directly.
+#
+# Separate from hermes-agent so Sonic/WebRTC restarts do not kill WhatsApp.
+# Image is built from cockpit-agent (voice/ + domo/ + domo_mirror/ + kai/), not the
+# Hermes gateway image.
+#
+# The Domo mirror lives in Postgres on RDS, reached through the ExternalName
+# Service below. Agents read it with PGSQL_USER; only the kai-mirror-sync CronJob
+# holds write credentials.
+# Secrets stay out of git: envFrom Secret cockpit-agent-env, shared with Hermes so
+# VOICE_JOIN_SECRET is identical on both sides by construction.
 
 global:
-  configMapSuffix: false
+  environment: dev
+  namespace: default
+  # Same region as the cluster and the RDS mirror: a cross-region pull is
+  # billed and slowed on every pod start.
+  imageRegistry: 009160046075.dkr.ecr.eu-central-1.amazonaws.com
+  awsRegion: eu-central-1
 
-  initContainers:
-    enabled: false
+name: kai-voice
+team: ibd-cockpit
 
-  csiVolumes:
-    enabled: true
-
-  nodeSelector:
-    intent: apps
-
-  istio:
-    enabled: false
-    labels: {}
-    annotations: {}
-
-  securityContext:
-    runAsNonRoot: true
-    runAsUser: 1000
-    runAsGroup: 1000
-    fsGroup: 1000
-
-  labels:
-    app.kubernetes.io/managed-by: Helm
-    app.kubernetes.io/name: kai-voice-agent
-    app.kubernetes.io/instance: observability
-
-  annotations:
-    meta.helm.sh/release-name: "{{ .Release.Name }}"
-    meta.helm.sh/release-namespace: "{{ .Release.Namespace }}"
-
-  tolerations:
-    enabled: true
-
-# Service-specific defaults (overridden by app-config)
-name: kai-voice-agent
-enabled: true
 replicas: 1
-terminationGracePeriodSeconds: 60
-envJsonMount:
-  enabled: false
 
 image:
-  repository: kai-voice-agent
-  tag: latest
+  repository: cockpit/kai-voice
+  # Stays empty in every values file. The tag is passed by the ArgoCD Application
+  # (helm.parameters), so an unset tag fails the render instead of deploying
+  # whatever was last pushed. validate.yml asserts that.
+  tag: ""
   pullPolicy: IfNotPresent
 
+serviceAccount:
+  create: true
+  name: kai-voice
+  # Create role manually (gitops only annotates). See README "Adding voice".
+  roleArn: arn:aws:iam::009160046075:role/cockpit-voice-dev
+
 service:
-  type: ClusterIP
-  port: 8081
-  targetPort: 8081
-  name: kai-voice-agent-service
+  name: kai-voice
+  port: 80
+  targetPort: 8787
 
-configMapName: "notification-app-config"
+containerPort: 8787
 
-config: {}
+# The LiveKit agent worker. No Service and no HTTP probe: it dials out to LiveKit
+# Cloud and is not reachable from the cluster. Scale with concurrent calls.
+worker:
+  name: kai-voice-worker
+  replicas: 1
+  # Ready is not dispatchable: the health endpoint answers 200 while the worker
+  # is still registering, so hold the new pod before draining the old one.
+  minReadySeconds: 20
+  # A call in progress outlives a normal grace period; give it room to end.
+  terminationGracePeriodSeconds: 300
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    # No CPU limit on purpose. The worker feeds Nova Sonic audio on a 20ms
+    # cadence; a CFS quota stalls the container until the next 100ms period,
+    # which is heard as a click. Memory stays capped.
+    limits:
+      memory: 2Gi
 
-tolerations:
-  - key: "resimspot"
-    operator: "Exists"
-    effect: "NoSchedule"
-  - key: "karpenter.sh/unschedulable"
-    operator: "Exists"
-    effect: "NoSchedule"
+# Points the cluster at RDS by DNS alias so the instance can be swapped without
+# touching app config, matching aurora-external-primary in ns-resim-dev.
+mirror:
+  serviceName: kai-mirror-postgres
+  port: 5432
+  # Set in app-config/<env>/values.yaml to the RDS endpoint hostname.
+  rdsEndpoint: ""
 
-probes:
+# Pulls briefed Domo datasets into Postgres. This is the only workload that may
+# write to the mirror.
+mirrorSync:
   enabled: true
-  startup:
-    httpGet:
-      path: /actuator/health/liveness
-      port: 8081
-      scheme: HTTP
-    initialDelaySeconds: 10
-    periodSeconds: 10
-    timeoutSeconds: 5
-    failureThreshold: 12    # 2 minute startup grace period (12 * 10s)
-    successThreshold: 1
+  name: kai-mirror-sync
+  schedule: "0 21 * * *"
+  timeZone: Etc/UTC
+  startingDeadlineSeconds: 3600
+  backoffLimit: 1
+  # The two largest tables are 27.6M and 19.1M rows; a full reload needs room.
+  activeDeadlineSeconds: 10800
+  # Holds PGSQL_SYNC_USER and PGSQL_SYNC_PASS only.
+  secretName: kai-mirror-sync-env
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      memory: 4Gi
 
-  readiness:
-    httpGet:
-      path: /actuator/health/readiness
-      port: 8081
-      scheme: HTTP
-    initialDelaySeconds: 5
-    periodSeconds: 20
-    timeoutSeconds: 3
-    failureThreshold: 3
-    successThreshold: 1
-
-  liveness:
-    httpGet:
-      path: /actuator/health/liveness
-      port: 8081
-      scheme: HTTP
-    initialDelaySeconds: 15
-    periodSeconds: 30
-    timeoutSeconds: 5
-    failureThreshold: 3
-    successThreshold: 1
+ingress:
+  enabled: false
+  name: kai-voice
+  className: alb
+  host: ""
+  path: /
+  pathType: Prefix
+  group: rakuten-esim
+  scheme: internet-facing
+  targetType: ip
+  healthcheckPath: /health
+  securityGroups: []
+  certificateArn: ""
+  wafAclArn: ""
+  externalDnsHostname: ""
 
 resources:
   requests:
-    memory: "512Mi"
-    cpu: "250m"
+    cpu: 250m
+    memory: 512Mi
   limits:
-    memory: "1Gi"
-    cpu: "500m"
+    cpu: "2"
+    memory: 2Gi
 
-hpa:
-  enabled: false
-  minReplicas: 1
-  maxReplicas: 10
-  targetCPUUtilizationPercentage: 70
-  targetMemoryUtilizationPercentage: 80
+probes:
+  enabled: true
+  path: /health
 
-pdb:
-  enabled: false
-  minAvailable: 1
+# The image already runs as uid 10001, but only the Dockerfile says so. Asserting
+# it here means a base-image change or a debug `USER root` cannot reach the
+# cluster as root without editing this file.
+#
+# readOnlyRootFilesystem is deliberately absent: voice/trace.py writes
+# /app/voice/.local/kai-trace.log on every tool call, so enabling it needs
+# emptyDir mounts and its own test.
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 10001
+  runAsGroup: 10001
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+# Non-secret env (ConfigMap). Secrets via envFrom secretRef.
+config:
+  # Nova Sonic speech runs in its own region; the Haiku SQL drafter follows
+  # AWS_REGION, so VOICE_BEDROCK_MODEL's `eu.` prefix must match it.
+  AWS_REGION: eu-central-1
+  AWS_DEFAULT_REGION: eu-central-1
+  VOICE_SONIC_REGION: us-east-1
+  VOICE_SONIC_VOICE: tiffany
+  VOICE_SONIC_TURN: MEDIUM
+  VOICE_SONIC_SQL_HELPER: "1"
+  VOICE_BEDROCK_MODEL: eu.anthropic.claude-haiku-4-5-20251001-v1:0
+  VOICE_BEDROCK_MAX_TOKENS: "400"
+  LIVEKIT_AGENT_NAME: kai-domo
+  VOICE_DOMO_TIMEOUT_S: "25"
+  VOICE_MAX_TOOL_STEPS: "12"
+  VOICE_SESSION_TTL_S: "28800"
+  VOICE_COOKIE_SECURE: "1"
+  VOICE_JOIN_TTL_S: "300"
+  DOMO_INSTANCE: rakuten-denwa.domo.com
+  DOMO_SCOPE: "data dashboard"
+  # Domo mirror (Postgres on RDS). PGSQL_HOST/PGSQL_PORT are derived from the
+  # mirror block in the ConfigMap template. PGSQL_PASS comes from the shared Secret.
+  PGSQL_DB: domo_datasets
+  PGSQL_SCHEMA: domo_mirror
+  # Master user: no separate reader role exists. Read-only protection is the
+  # pool's default_transaction_read_only, not a grant.
+  PGSQL_USER: useradmin
+  # Pods reach RDS via a cluster Service, so the cert hostname can never match;
+  # require encrypts without attempting the verification that would always fail.
+  PGSQL_SSLMODE: require
+  HERMES_LANGFUSE_BASE_URL: "https://cloud.langfuse.com"
+  HERMES_LANGFUSE_ENV: production
+  HERMES_LANGFUSE_SAMPLE_RATE: "1.0"
+  VOICE_LANGFUSE_CAPTURE: sanitized
+
+# Shared with Hermes: Domo, allowlist, VOICE_JOIN_SECRET, LIVEKIT_API_KEY,
+# LIVEKIT_API_SECRET, LIVEKIT_URL, Langfuse keys.
+#
+# The ConfigMap is listed AFTER this secret in the pod spec, so on a duplicate key
+# the ConfigMap wins. That is deliberate: the Secret was created with
+# --from-env-file from a laptop .env, so it can carry developer values such as a
+# 127.0.0.1 VOICE_PUBLIC_BASE_URL, which would otherwise silently point every
+# WhatsApp join link at localhost.
+envFromSecret: cockpit-agent-env
+
+terminationGracePeriodSeconds: 45
+
+podAnnotations:
+  gitops.cockpit/managed-by: argocd
+  gitops.cockpit/repo: gitops-cockpit-agent
+  gitops.cockpit/workload: kai-voice

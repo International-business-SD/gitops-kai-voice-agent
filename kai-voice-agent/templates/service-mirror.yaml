@@ -1,0 +1,13 @@
+{{- if not .Values.mirror.rdsEndpoint }}
+{{- fail "mirror.rdsEndpoint is empty — set it in kai-voice/app-config/<env>/<region>/values.yaml. PGSQL_HOST points at this Service, so without it every pod gets NXDOMAIN." }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.mirror.serviceName }}
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app: {{ .Values.name }}
+spec:
+  type: ExternalName
+  externalName: {{ .Values.mirror.rdsEndpoint | quote }}

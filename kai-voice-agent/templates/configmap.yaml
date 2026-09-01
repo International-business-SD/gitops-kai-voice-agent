@@ -1,24 +1,14 @@
 apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: {{ .Values.configMapName }}{{- if and .Values.global.configMapSuffix .Values.global.environment }}-{{ .Values.global.environment }}{{- end }}
+  name: {{ .Values.name }}-config
   namespace: {{ .Values.global.namespace }}
   labels:
     app: {{ .Values.name }}
-    {{- with .Values.global.labels }}
-    {{- toYaml . | nindent 4 }}
-    {{- end }}
-  annotations:
-    {{- if .Values.global.annotations }}
-    {{- range $key, $value := .Values.global.annotations }}
-    {{ $key }}: {{ tpl $value $ | quote }}
-    {{- end }}
-    {{- end }}
 data:
-  {{- $cfg := .Values.config | default dict }}
-  {{- if not (kindIs "map" $cfg) }}
-  {{- fail "values.config must be a map of key/value pairs" }}
+  {{- range $key, $value := .Values.config }}
+  {{ $key }}: {{ $value | quote }}
   {{- end }}
-  {{- range $key := keys $cfg | sortAlpha }}
-  {{ $key }}: {{ tpl (toString (index $cfg $key)) $ | quote }}
-  {{- end }}
+  # Derived, so renaming the Service cannot leave PGSQL_HOST pointing at the old name.
+  PGSQL_HOST: {{ printf "%s.%s.svc.cluster.local" .Values.mirror.serviceName .Values.global.namespace | quote }}
+  PGSQL_PORT: {{ .Values.mirror.port | quote }}
