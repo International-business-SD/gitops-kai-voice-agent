@@ -1,0 +1,28 @@
+# Uat defaults for kai-voice.
+#
+# image.tag stays empty here. The ArgoCD Application supplies the real tag through
+# helm.parameters, and validate.yml renders these files without one and requires
+# the render to fail — so a tag committed here turns that CI step red.
+
+global:
+  environment: uat
+  namespace: ns-cockpit-agent
+  imageRegistry: 009160046075.dkr.ecr.eu-central-1.amazonaws.com
+
+replicas: 1
+
+serviceAccount:
+  # Name must match the sub the role's trust policy allows, or STS refuses the assume.
+  name: cockpit-voice-uat
+  roleArn: arn:aws:iam::009160046075:role/cockpit-voice-uat
+
+image:
+  repository: kai-voice-agent-uat
+  tag: "stg"
+
+config:
+  AWS_REGION: eu-central-1
+  AWS_DEFAULT_REGION: eu-central-1
+  # Nova Sonic is not in eu-central-1 today; keep us-east-1 for the speech model.
+  VOICE_SONIC_REGION: us-east-1
+  HERMES_LANGFUSE_ENV: production
