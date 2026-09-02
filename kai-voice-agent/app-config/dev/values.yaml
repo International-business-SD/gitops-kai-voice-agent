@@ -15,7 +15,7 @@ serviceAccount:
   roleArn: arn:aws:iam::009160046075:role/cockpit-voice-dev
 image:
   repository: kai-voice-agent-dev
-  tag: "48dbbc4"
+  tag: "dev-687e85d"
 config:
   AWS_REGION: eu-central-1
   AWS_DEFAULT_REGION: eu-central-1
