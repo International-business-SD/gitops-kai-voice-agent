@@ -47,7 +47,7 @@ serviceAccount:
 
 service:
   name: kai-voice
-  port: 80
+  port: 8787
   targetPort: 8787
 
 containerPort: 8787
