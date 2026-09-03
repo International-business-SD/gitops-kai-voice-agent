@@ -1,0 +1,50 @@
+# JP (ap-northeast-1) region overlay for kai-voice uat.
+# Cluster: eks-resim-jp-uat-001 (built 2026-09-03, Kubernetes 1.36)
+# ArgoCD:  project kai-voice-agent-uat-jp, hub = the UAT ArgoCD inside
+#          eks-resim-eu-uat-002 (NOT the dev-eu hub).
+#
+# Placement only; see dev/jp/values.yaml for the full reasoning and for the list
+# of values that move during the dependency rebuild. Note this environment
+# deploys into namespace ns-cockpit-agent, not `default` as dev does -- that
+# comes from app-config/uat/values.yaml and the ArgoCD repo entry must agree
+# with it.
+
+global:
+  # Documentation only.
+  awsRegion: ap-northeast-1
+  #
+  # imageRegistry stays on the eu-central-1 ECR, inherited from
+  # app-config/uat/values.yaml. The UAT image is `kai-voice-agent-uat`, and no
+  # ap-northeast-1 repository of that name exists yet -- only an empty
+  # `kai-voice-agent-dev`. Cross-region pull works meanwhile.
+
+# Region-scoped and unmoved: there is no RDS instance in ap-northeast-1 at all.
+# Cross-region until a JP instance is built.
+mirror:
+  rdsEndpoint: domo-datasets-db.crius6cgw774.eu-central-1.rds.amazonaws.com
+
+ingress:
+  enabled: true
+
+  # Independent JP hostname so this deployment is verifiable while EU still
+  # serves. AT CUTOVER: switch to the canonical UAT hostname and remove the EU
+  # Application.
+  host: uat-kai-voice-jp.myesimprofile.com
+  externalDnsHostname: uat-kai-voice-jp.myesimprofile.com
+
+  group: rakuten-esim
+
+  # UAT VPC groups. An ALB can only attach security groups from its own VPC, so
+  # the dev IDs would fail outright here rather than merely being wrong.
+  securityGroups:
+    - sg-0a132f930374c8a09 # ibsd-office-whitelist-http-sg-uat  (vpc-resim-jp-uat-001)
+    - sg-00de5a719f64f3471 # ibsd-office-whitelist-https-sg-uat (vpc-resim-jp-uat-001)
+
+  certificateArn: arn:aws:acm:ap-northeast-1:009160046075:certificate/f0b133e8-8ed5-417e-82e2-16adede7af8e
+  # The UAT ACL, not the dev one.
+  wafAclArn: arn:aws:wafv2:ap-northeast-1:009160046075:regional/webacl/Web-WAF-jp-uat/2ddde32f-925c-4495-a8c5-3bc3a2113c42
+
+config:
+  VOICE_PUBLIC_BASE_URL: "https://uat-kai-voice-jp.myesimprofile.com"
+  VOICE_COOKIE_SECURE: "1"
+  LIVEKIT_URL: "wss://domo-ksvmh17v.livekit.cloud"

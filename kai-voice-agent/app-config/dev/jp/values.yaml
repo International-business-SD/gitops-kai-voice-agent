@@ -1,0 +1,107 @@
+# JP (ap-northeast-1) region overlay for kai-voice dev.
+# Cluster: eks-resim-jp-dev-001 (rebuilt 2026-09-03, Kubernetes 1.36)
+# ArgoCD:  project kai-voice-agent-dev-jp, hub = the dev-eu ArgoCD.
+#
+# Placement only, same as the gitops-aire dev/jp overlay: ALB, certificate, WAF
+# and office security groups become JP-local. The stateful dependencies stay in
+# eu-central-1 for now and are called out individually below, because unlike
+# AIRE this workload has two that are NOT merely a config swap -- see
+# mirror.rdsEndpoint and the image registry note.
+
+global:
+  # Documentation only.
+  awsRegion: ap-northeast-1
+  #
+  # NOTE ON THE IMAGE. global.imageRegistry is inherited from
+  # app-config/dev/values.yaml and still reads
+  # 009160046075.dkr.ecr.eu-central-1.amazonaws.com. That is deliberate and it
+  # works -- the JP node role carries AmazonEC2ContainerRegistryReadOnly, so a
+  # cross-region pull succeeds; it is just slower on a cold node.
+  #
+  # It is NOT switched to the JP registry yet because the ap-northeast-1
+  # repository `kai-voice-agent-dev` EXISTS BUT IS EMPTY (created 2026-09-01,
+  # zero images). Pointing at it before the image is replicated gives
+  # ImagePullBackOff, not a fallback. Replicate the tag first, then set:
+  #   imageRegistry: 009160046075.dkr.ecr.ap-northeast-1.amazonaws.com
+
+# STILL eu-central-1. This is the single largest open item for this workload.
+#
+# The Domo mirror database is region-scoped and there is no RDS instance in
+# ap-northeast-1 at all -- the region has zero. Pointing here keeps the pod
+# working (cross-region, ~230 ms per query) while the JP instance is built.
+#
+# The chart fails its render if this is empty, so it cannot be silently
+# forgotten; it can, however, be silently slow. When the JP instance exists,
+# replace this with its endpoint. Note the decision on record is to RECREATE
+# rather than replicate, and to size it properly -- the EU instance is 20 GB
+# against ~48.5M rows across 12 datasets and has never completed a full load.
+mirror:
+  rdsEndpoint: domo-datasets-db.crius6cgw774.eu-central-1.rds.amazonaws.com
+
+ingress:
+  enabled: true
+
+  # NOT kai-voice.myesimprofile.com. Two reasons, and the second is the one that
+  # matters: that record does not currently exist at all. The live EU names are
+  # dev-kai-voice and kai-voice-dev, so the canonical hostname is something that
+  # gets CREATED at cutover rather than repointed. Until then this host keeps the
+  # JP deployment independently reachable and verifiable.
+  #
+  # AT CUTOVER: decide which of dev-kai-voice / kai-voice-dev / kai-voice is
+  # canonical, set it here and in VOICE_PUBLIC_BASE_URL below, and remove the EU
+  # Application.
+  host: kai-voice-jp.myesimprofile.com
+  externalDnsHostname: kai-voice-jp.myesimprofile.com
+
+  group: rakuten-esim
+
+  # JP dev VPC office whitelist (vpc-resim-jp-dev-001). Currently 115 CIDRs
+  # against EU's 120 -- five ranges added to EU only.
+  securityGroups:
+    - sg-0db6c54a72d908e95 # ibsd-office-whitelist-http-sg-dev
+    - sg-01488fcb44955c2d5 # ibsd-office-whitelist-https-sg-dev
+
+  # ap-northeast-1 wildcard. A cross-region ARN is dropped silently by the AWS
+  # Load Balancer Controller and yields an HTTP-only listener.
+  certificateArn: arn:aws:acm:ap-northeast-1:009160046075:certificate/f0b133e8-8ed5-417e-82e2-16adede7af8e
+  wafAclArn: arn:aws:wafv2:ap-northeast-1:009160046075:regional/webacl/Web-WAF-JP-Security-Fixed/1f95d77e-7880-4800-8a0a-15a7cdad35e1
+
+config:
+  # Must match the origin actually served, and must be changed together with
+  # ingress.host above -- Hermes builds its voice CTA from this value.
+  VOICE_PUBLIC_BASE_URL: "https://kai-voice-jp.myesimprofile.com"
+  VOICE_COOKIE_SECURE: "1"
+
+  # LiveKit Cloud is a third-party SaaS outside AWS and needs no regional
+  # change: the worker only makes outbound 443 connections and LiveKit routes it
+  # to its nearest edge, so running from Tokyo gets a Tokyo edge automatically.
+  LIVEKIT_URL: "wss://domo-ksvmh17v.livekit.cloud"
+
+  # OPPORTUNITY, not yet taken. app-config/dev/values.yaml pins
+  # VOICE_SONIC_REGION: us-east-1 with the comment "Nova Sonic is not in
+  # eu-central-1 today". That is no longer the binding constraint here --
+  # amazon.nova-2-sonic-v1:0 is ACTIVE and ON_DEMAND in ap-northeast-1 (verified
+  # 2026-09-02), so this deployment can drop the cross-region hop entirely on a
+  # 20 ms-cadence audio path by setting:
+  #
+  #   VOICE_SONIC_REGION: ap-northeast-1
+  #
+  # Left alone for now because the IAM policy cockpit-voice-bedrock-dev-eu grants
+  # Nova Sonic on the us-east-1 model ARN only; flipping this without the
+  # matching policy change is an AccessDenied on first utterance.
+
+# ── WHAT CHANGES AT THE DEPENDENCY REBUILD ──────────────────────────────────
+#
+#   AWS_REGION / AWS_DEFAULT_REGION   eu-central-1 -> ap-northeast-1
+#   VOICE_BEDROCK_MODEL               eu.anthropic.claude-haiku-4-5-...
+#                                     -> jp.anthropic.claude-haiku-4-5-...
+#   serviceAccount.roleArn            cockpit-voice-dev needs the JP cluster's
+#                                     OIDC issuer added to its trust policy, and
+#                                     a cockpit-voice-bedrock-dev-jp policy that
+#                                     names BOTH ap-northeast-1 AND
+#                                     ap-northeast-3 member-region model ARNs --
+#                                     the jp. inference profile routes to both,
+#                                     and naming only one reproduces the
+#                                     intermittent failures seen in EU.
+#   mirror.rdsEndpoint                -> the new JP instance
+#   global.imageRegistry              -> the JP ECR, once replicated
